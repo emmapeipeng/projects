@@ -1,0 +1,322 @@
+---
+title: "Predictive Modeling"
+author: "Emma Peng"
+date: "2025-04-26"
+output: 
+  html_document:
+    toc: true
+    toc_float: true 
+    toc_depth: 3
+---
+
+# <u> **Election Outcomes Modeling** </u>
+
+# **Logistic Regression**
+
+## Step 1: Get the Data
+
+Import filtered dataset with NULL values in key columns already removed, includes 13,346 of the 27,519 rows used for Ballotpedia's analyses & reports. 
+
+```{r}
+ballot <- read.csv("ballotpedia_filtered.csv", stringsAsFactors = TRUE)
+# str(ballot)
+# summary(ballot)
+
+```
+
+
+## Step 2: Clean the Data
+
+Remove unnecessary columns and factorize columns that may be used as predictors; don't factorize everything given that many of the qualitative variables have dozens of levels if factorized. 
+
+```{r}
+library(dplyr)
+library(caret)
+
+colnames(ballot)[colnames(ballot) == "X"] <- "stage"
+
+
+# Get rid of unnecessary columns
+ballot <- ballot %>%
+  select(-ends_with("_id"))
+
+ballot$id <- NULL
+ballot$candidate <- NULL
+ballot$first_name <- NULL
+ballot$last_name <- NULL
+ballot$row_index <- NULL
+ballot$votes_against <- NULL
+ballot$delegates_pledged <- NULL
+ballot$parent_district_name <- NULL
+ballot$election_date <- NULL
+ballot$election_year <- NULL
+ballot$stage_party <- NULL
+
+# Factorize variables that may be used as predictors; use factors with small num of levels
+ballot$is_incumbent <- as.factor(ballot$is_incumbent)
+ballot$gender <- as.factor(ballot$gender)
+ballot$stage <- as.factor(ballot$stage)
+ballot$office_branch <- as.factor(ballot$office_branch)
+
+# Create new datafrae with selected predictors
+new_ballot <- ballot %>%
+  select(total_disbursements, total_contributions, spending_rank, gender, stage, office_branch, is_incumbent, candidate_status)
+
+# Make response variable binary 
+new_ballot$candidate_status <- ifelse(new_ballot$candidate_status == "Won", 1, 0) 
+
+# One-hot encode numeric select predictors
+factors <- dummyVars(~ . -1, data = new_ballot)
+new_ballot <- predict(factors, newdata = new_ballot)
+new_ballot<- as.data.frame(new_ballot) 
+
+
+```
+
+```{r}
+predictors <- new_ballot[, !names(new_ballot) %in% "candidate_status"]
+target <- new_ballot$candidate_status
+
+# Function to normalize
+minmax <- function(x) {
+  (x - min(x)) / (max(x) - min(x))
+}
+
+# Normalize only numeric columns
+scaled_predictors <- predictors %>%
+  mutate(across(where(is.numeric), minmax))
+
+final_ballot <- cbind(scaled_predictors, candidate_status = target)
+
+```
+
+## Step 3: Split Data
+
+```{r}
+
+set.seed(12345)
+train_rows <- sample(1:nrow(final_ballot), .5*nrow(final_ballot))
+
+train_ballot <- final_ballot[train_rows, ]
+test_ballot <- final_ballot[-train_rows, ]  
+
+```
+
+## Step 4: Build a Model
+
+Build a simple model to start using only numeric values. 
+
+```{r}
+
+m1 <-glm(candidate_status ~ total_disbursements + total_contributions + spending_rank, data = train_ballot, family = "binomial" )
+summary(m1)
+
+
+```
+
+## Step 5: Predict the Test Data
+
+
+```{r}
+ballot_pred <- predict(m1, test_ballot, type = "response")
+summary(ballot_pred)
+
+# Start with threshold of 0.5
+predict_binary <- ifelse(ballot_pred < 0.5, 0, 1)
+summary(predict_binary)
+table(predict_binary)
+
+```
+
+## Step 6: Evaluate the Model
+
+```{r}
+confusionMatrix(factor(predict_binary), factor(test_ballot$candidate_status), positive = "1") 
+```
+## Step 7: Improve the Model
+
+Include factorized categorical predictors
+
+```{r}
+m2 <-glm(candidate_status ~ ., data = train_ballot, family = "binomial" )
+ballot_pred2 <- predict(m2, test_ballot, type = "response")
+summary(ballot_pred2)
+
+# Start with threshold of 0.5
+predict_binary2 <- ifelse(ballot_pred2 < 0.5, 0, 1)
+summary(predict_binary2)
+table(predict_binary2)
+
+confusionMatrix(factor(predict_binary2), factor(test_ballot$candidate_status), positive = "1") 
+
+
+```
+# **KNN**
+
+Create initial model of just numeric predictors. 
+
+```{r}
+library(class)
+
+predictors <- c("total_disbursements", "total_contributions", "spending_rank")
+
+
+pred_knn <- knn(train = train_ballot[, predictors],
+                 test = test_ballot[, predictors],     
+                 cl = train_ballot$candidate_status,      
+                 k = 19)  
+
+confusionMatrix(as.factor(pred_knn), as.factor(test_ballot$candidate_status), positive = "1")   
+
+```
+
+
+```{r}
+
+pred_knn2 <- knn(
+  train = train_ballot[, !names(train_ballot) %in% "candidate_status"], 
+  test = test_ballot[, !names(test_ballot) %in% "candidate_status"],
+  cl = train_ballot$candidate_status, 
+  k = 19
+)
+
+confusionMatrix(as.factor(pred_knn2), as.factor(test_ballot$candidate_status), positive = "1")
+```
+
+# **ANN**
+
+Again, we can use the same training and testing datasets since ANN also only takes in numeric values.
+
+```{r}
+names(train_ballot) <- make.names(names(train_ballot))
+```
+
+
+```{r}
+library(neuralnet)
+set.seed(12345) 
+# m1_ann <- neuralnet(candidate_status ~ ., hidden = 1, threshold = 0.01, stepmax = 1e8, lifesign = "full", data = train_ballot)
+```
+
+```{r}
+# saveRDS(m1_ann, "ANNModelM1.rds")
+m1_ann <- readRDS("ANNModelM1.rds")
+```
+
+```{r}
+names(test_ballot) <- make.names(names(test_ballot))
+
+pred_ann <- predict(m1_ann, test_ballot)
+summary(pred_ann)
+
+binary_pred_ann <- ifelse(pred_ann < 0.3, 0, 1)
+
+confusionMatrix(as.factor(binary_pred_ann), as.factor(test_ballot$candidate_status), positive = "1")
+```
+
+# **SVM**
+
+Use vanilladot just for a linear model to start. 
+
+```{r}
+library(kernlab)
+m1_svm <- ksvm(as.factor(candidate_status) ~ ., data = train_ballot, kernel = "vanilladot")
+
+```
+
+```{r}
+pred_svm <- predict(m1_svm, test_ballot) 
+confusionMatrix(as.factor(pred_svm), as.factor(test_ballot$candidate_status), positive = "1")
+
+```
+Use rbfdot to see if this fits better
+
+```{r}
+# m2_svm_prob <- ksvm(as.factor(candidate_status) ~ ., data = test_ballot, kernel = "rbfdot", prob.model = TRUE)
+# saveRDS(m2_svm_prob, "svm_probs.rds")
+svm_pred_probs <- readRDS("svm_probs.rds") 
+svm_probs <- predict(svm_pred_probs, test_ballot, type = "prob")
+svm_probs <- svm_probs[, 2] 
+svm_binary_pred <- ifelse(svm_probs < 0.5, 0, 1) 
+confusionMatrix(as.factor(svm_binary_pred), as.factor(test_ballot$candidate_status), positive = "1")
+
+```
+# **Decision Tree**
+
+Create a decision tree for the last predictions input for the stacked model. 
+
+```{r}
+library(C50)
+tree1 <- C5.0(as.factor(candidate_status) ~ ., data = train_ballot)
+plot(tree1)
+pred_tree <- predict(tree1, test_ballot, type = "prob")
+tree_binary_pred <- ifelse(pred_tree[,2] < 0.5, 0, 1)
+confusionMatrix(as.factor(tree_binary_pred), as.factor(test_ballot$candidate_status), positive = "1")
+
+```
+
+# **Stacked Model**
+
+Use the prediction vectors of all the models made to create the second-level stacked model.
+
+```{r}
+# Combine the vectors into columns of a dataframe
+stack_data <- data.frame(ballot_pred, pred_knn2, pred_ann, svm_probs, pred_tree, test_ballot$candidate_status)
+
+# Check for the right number of rows 
+dim(stack_data)
+dim(ballot)
+
+# Remove X0 because we only want probabilities for class 1
+stack_data$X0 <- NULL
+
+```
+```{r}
+set.seed(12345)
+test_rows_stacked <- sample(1:nrow(stack_data), 0.3*nrow(stack_data))
+
+stacked_test <- stack_data[test_rows_stacked, ]
+stacked_train <- stack_data[-test_rows_stacked, ]
+```
+
+```{r}
+stack_tree <- C5.0(as.factor(test_ballot.candidate_status) ~ ., data = stacked_train)
+plot(stack_tree)
+
+```
+```{r} 
+stack_pred <- predict(stack_tree, stacked_test, type = "prob")
+
+stack_binary_pred <- ifelse(stack_pred[,2] < 0.5, 0, 1)
+
+confusionMatrix(as.factor(stack_binary_pred), as.factor(stacked_test$test_ballot.candidate_status), positive = "1")
+```
+Summary of the models
+
+```{r}
+data.frame(
+  Model = c('Logistic', 'KNN', 'ANN', 'SVM', 'Decision Tree', 'Stacked Model'),
+  Accuracy = c(0.8723, 0.896, 0.8483, 0.8698, 0.8969, 0.8991),
+  Kappa = c(0.739, 0.7904, 0.7001, 0.7334, 0.7914, 0.7971),
+  Sensitivity = c(0.7570, 0.8798, 0.9560, 0.7459, 0.8524, 0.8904),
+  Specificity = c(0.9706, 0.9098, 0.7566, 0.9753, 0.9348, 0.9065)
+)
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
