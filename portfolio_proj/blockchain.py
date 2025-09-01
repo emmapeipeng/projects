@@ -14,7 +14,7 @@
 # to find but easy to verify"
 # slows down creation of new blocks; takes like 10 min for bitcoin
 
-import hashlib
+import hashlib # the SHA 256 hash!!
 import json
 from time import time
 from textwrap import dedent
